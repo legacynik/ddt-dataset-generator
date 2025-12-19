@@ -43,8 +43,24 @@ class Settings(BaseSettings):
     # =================== GOOGLE GEMINI ===================
     GOOGLE_API_KEY: str = Field(..., description="Google API key for Gemini models")
     GEMINI_MODEL: str = Field(
-        default="gemini-1.5-flash",
+        default="gemini-2.0-flash-exp",
         description="Gemini model to use for extraction"
+    )
+
+    # =================== OPENROUTER (Optional - for multi-LLM) ===================
+    OPENROUTER_API_KEY: str = Field(
+        default="",
+        description="OpenRouter API key for Claude, GPT-4, etc. (optional)"
+    )
+    OPENROUTER_BASE_URL: str = Field(
+        default="https://openrouter.ai/api/v1",
+        description="OpenRouter API base URL"
+    )
+
+    # =================== OLLAMA (Optional - for local models) ===================
+    OLLAMA_BASE_URL: str = Field(
+        default="http://localhost:11434",
+        description="Ollama API base URL for local models"
     )
 
     # =================== SUPABASE ===================

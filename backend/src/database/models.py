@@ -243,3 +243,228 @@ class ProcessingStats(BaseModel):
             "rejected": self.rejected,
             "errors": self.errors,
         }
+
+
+# ===========================================
+# Playground Models (Multi-Extractor Support)
+# ===========================================
+
+class ExtractorType(str, Enum):
+    """Type of extraction model."""
+
+    GEMINI = "gemini"
+    OPENROUTER = "openrouter"
+    OLLAMA = "ollama"
+    DATALAB = "datalab"
+    CUSTOM = "custom"
+
+
+class RunStatus(str, Enum):
+    """Status of an extraction run."""
+
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class Extractor(BaseModel):
+    """Model for extractors table.
+
+    Represents a configurable LLM extractor for DDT data extraction.
+    Supports multiple backends: Gemini, OpenRouter, Ollama, custom.
+    """
+
+    id: UUID
+    created_at: datetime
+    updated_at: datetime
+
+    # Identity
+    name: str = Field(..., max_length=100)
+    description: Optional[str] = None
+
+    # Type and model
+    type: ExtractorType
+    model_id: str = Field(..., max_length=100)
+
+    # Configuration
+    system_prompt: str
+    extraction_schema: dict[str, Any]
+    temperature: Decimal = Field(default=Decimal("0.1"), ge=0, le=2)
+    max_tokens: int = Field(default=2048, ge=100, le=16000)
+
+    # API settings
+    api_base_url: Optional[str] = None
+    api_key_env: Optional[str] = None
+
+    # Status
+    is_active: bool = True
+    is_baseline: bool = False
+
+    # Accuracy (calculated)
+    overall_accuracy: Optional[Decimal] = Field(None, ge=0, le=1)
+    last_benchmark_at: Optional[datetime] = None
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "id": "123e4567-e89b-12d3-a456-426614174000",
+                "name": "Gemini 2.0 Flash",
+                "type": "gemini",
+                "model_id": "gemini-2.0-flash-exp",
+                "is_active": True,
+                "overall_accuracy": 0.92,
+            }
+        }
+    }
+
+    @field_validator("temperature", "overall_accuracy", mode="before")
+    @classmethod
+    def convert_decimal(cls, v: Any) -> Optional[Decimal]:
+        if v is None:
+            return None
+        if isinstance(v, (int, float)):
+            return Decimal(str(v))
+        return v
+
+
+class ExtractionRun(BaseModel):
+    """Model for extraction_runs table.
+
+    Represents a test run for benchmarking an extractor on a set of samples.
+    """
+
+    id: UUID
+    created_at: datetime
+    completed_at: Optional[datetime] = None
+
+    # Identity
+    name: str = Field(..., max_length=100)
+    description: Optional[str] = None
+
+    # Configuration
+    extractor_id: UUID
+    sample_ids: Optional[list[UUID]] = None
+
+    # Status
+    status: RunStatus = RunStatus.PENDING
+
+    # Aggregated results
+    total_samples: int = 0
+    processed: int = 0
+    successful: int = 0
+    failed: int = 0
+
+    # Accuracy metrics
+    accuracy_vs_ground_truth: Optional[Decimal] = Field(None, ge=0, le=1)
+    accuracy_vs_baseline: Optional[Decimal] = Field(None, ge=0, le=1)
+    avg_processing_time_ms: Optional[int] = None
+
+    notes: Optional[str] = None
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "id": "123e4567-e89b-12d3-a456-426614174000",
+                "name": "Test Run #1 - Gemini 2.0",
+                "status": "completed",
+                "total_samples": 20,
+                "processed": 20,
+                "accuracy_vs_ground_truth": 0.94,
+            }
+        }
+    }
+
+    @field_validator("accuracy_vs_ground_truth", "accuracy_vs_baseline", mode="before")
+    @classmethod
+    def convert_accuracy(cls, v: Any) -> Optional[Decimal]:
+        if v is None:
+            return None
+        if isinstance(v, (int, float)):
+            return Decimal(str(v))
+        return v
+
+    @property
+    def progress_percent(self) -> float:
+        if self.total_samples == 0:
+            return 0.0
+        return round((self.processed / self.total_samples) * 100, 2)
+
+
+class ExtractionResult(BaseModel):
+    """Model for extraction_results table.
+
+    Stores the extraction result for a single sample in a specific run.
+    """
+
+    id: UUID
+    created_at: datetime
+
+    # Links
+    run_id: UUID
+    sample_id: UUID
+    extractor_id: UUID
+
+    # Results
+    extracted_json: Optional[dict[str, Any]] = None
+    processing_time_ms: Optional[int] = None
+    error_message: Optional[str] = None
+    success: bool = True
+
+    # Comparison scores
+    match_vs_ground_truth: Optional[Decimal] = Field(None, ge=0, le=1)
+    match_vs_baseline: Optional[Decimal] = Field(None, ge=0, le=1)
+    field_matches: Optional[dict[str, bool]] = None
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "id": "123e4567-e89b-12d3-a456-426614174000",
+                "success": True,
+                "extracted_json": {"mittente": "LAVAZZA", "numero_documento": "DDT-001"},
+                "match_vs_ground_truth": 1.0,
+            }
+        }
+    }
+
+    @field_validator("match_vs_ground_truth", "match_vs_baseline", mode="before")
+    @classmethod
+    def convert_match(cls, v: Any) -> Optional[Decimal]:
+        if v is None:
+            return None
+        if isinstance(v, (int, float)):
+            return Decimal(str(v))
+        return v
+
+
+class FieldAccuracy(BaseModel):
+    """Model for field_accuracy table.
+
+    Tracks per-field extraction accuracy for each extractor.
+    """
+
+    id: UUID
+    updated_at: datetime
+
+    extractor_id: UUID
+    field_name: str = Field(..., max_length=50)
+
+    correct_count: int = 0
+    total_count: int = 0
+    accuracy: Optional[Decimal] = Field(None, ge=0, le=1)
+
+    @field_validator("accuracy", mode="before")
+    @classmethod
+    def convert_field_accuracy(cls, v: Any) -> Optional[Decimal]:
+        if v is None:
+            return None
+        if isinstance(v, (int, float)):
+            return Decimal(str(v))
+        return v
+
+    @property
+    def calculated_accuracy(self) -> float:
+        if self.total_count == 0:
+            return 0.0
+        return self.correct_count / self.total_count
