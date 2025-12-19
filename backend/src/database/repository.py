@@ -247,6 +247,66 @@ class SampleRepository:
         logger.info(f"Retrieved {len(samples)} validated samples")
         return samples
 
+    def reset_samples(self, sample_ids: Optional[list[str]] = None) -> int:
+        """Reset samples to pending status, clearing all extraction results.
+
+        This keeps the PDF files in storage but clears all processing data,
+        allowing samples to be reprocessed through the pipeline.
+
+        Args:
+            sample_ids: Optional list of specific sample IDs to reset.
+                       If None, resets ALL samples.
+
+        Returns:
+            Number of samples reset
+        """
+        logger.warning(
+            f"Resetting samples to pending: "
+            f"{'specific IDs' if sample_ids else 'ALL samples'}"
+        )
+
+        # Fields to clear (set to None/pending)
+        reset_data = {
+            "status": SampleStatus.PENDING.value,
+            "datalab_raw_ocr": None,
+            "datalab_json": None,
+            "datalab_processing_time_ms": None,
+            "datalab_error": None,
+            "azure_raw_ocr": None,
+            "azure_processing_time_ms": None,
+            "azure_error": None,
+            "gemini_json": None,
+            "gemini_processing_time_ms": None,
+            "gemini_error": None,
+            "match_score": None,
+            "discrepancies": None,
+            "validated_output": None,
+            "validation_source": None,
+            "validator_notes": None,
+            "dataset_split": None,
+        }
+
+        if sample_ids:
+            # Reset specific samples
+            response = (
+                self.client.table(self.table_name)
+                .update(reset_data)
+                .in_("id", sample_ids)
+                .execute()
+            )
+        else:
+            # Reset all samples - need to use a condition that matches all
+            response = (
+                self.client.table(self.table_name)
+                .update(reset_data)
+                .neq("id", "00000000-0000-0000-0000-000000000000")  # Matches all real UUIDs
+                .execute()
+            )
+
+        count = len(response.data) if response.data else 0
+        logger.info(f"Reset {count} samples to pending status")
+        return count
+
 
 class StatsRepository:
     """Repository for managing processing statistics.

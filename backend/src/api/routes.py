@@ -29,6 +29,8 @@ from .schemas import (
     ValidationResponse,
     ExportRequest,
     ExportResponse,
+    ResetRequest,
+    ResetResponse,
     PreviousResultsResponse,
 )
 from src.database import (
@@ -543,6 +545,63 @@ async def export_dataset_endpoint(
             if stats.field_coverage else 0.0
         }
     )
+
+
+@router.post("/samples/reset", response_model=ResetResponse)
+async def reset_samples(
+    request: ResetRequest = ResetRequest(sample_ids=None)
+) -> ResetResponse:
+    """Reset samples to pending status, clearing all extraction results.
+
+    This endpoint allows you to:
+    - Reset ALL samples to reprocess them through the pipeline
+    - Reset specific samples by providing their IDs
+
+    The PDF files are kept in storage, only the extraction results are cleared.
+
+    Args:
+        request: Optional list of sample IDs to reset. If empty, resets ALL samples.
+
+    Returns:
+        ResetResponse with count of reset samples
+
+    Raises:
+        HTTPException 409: If processing is currently running
+        HTTPException 500: If reset operation fails
+    """
+    global _is_processing
+
+    if _is_processing:
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot reset while processing is running. Please wait for it to complete."
+        )
+
+    logger.warning(
+        f"Reset requested for {'specific samples' if request.sample_ids else 'ALL samples'}"
+    )
+
+    try:
+        repo = SampleRepository()
+        reset_count = repo.reset_samples(request.sample_ids)
+
+        # Also reset the stats
+        stats_repo = StatsRepository()
+        stats_repo.reset_stats()
+
+        logger.info(f"Reset completed: {reset_count} samples reset to pending")
+
+        return ResetResponse(
+            message=f"Successfully reset {reset_count} samples to pending status",
+            reset_count=reset_count
+        )
+
+    except Exception as e:
+        logger.error(f"Reset failed: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to reset samples: {str(e)}"
+        )
 
 
 @router.get("/previous-results", response_model=PreviousResultsResponse)

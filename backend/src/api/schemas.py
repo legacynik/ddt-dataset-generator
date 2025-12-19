@@ -307,6 +307,39 @@ class ExportResponse(BaseModel):
         }
 
 
+# ===== Reset =====
+
+class ResetRequest(BaseModel):
+    """Request body for POST /api/samples/reset."""
+
+    sample_ids: Optional[List[str]] = Field(
+        None,
+        description="Specific sample IDs to reset. If None, resets ALL samples."
+    )
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "sample_ids": None  # Reset all samples
+            }
+        }
+
+
+class ResetResponse(BaseModel):
+    """Response from POST /api/samples/reset."""
+
+    message: str = Field(..., description="Success message")
+    reset_count: int = Field(..., description="Number of samples reset to pending")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "message": "Samples reset successfully",
+                "reset_count": 21
+            }
+        }
+
+
 # ===== Previous Results =====
 
 class PreviousResultsResponse(BaseModel):

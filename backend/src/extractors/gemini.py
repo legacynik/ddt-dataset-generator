@@ -33,8 +33,10 @@ REGOLE:
 4. Per mittente e destinatario, estrai SOLO la ragione sociale (nome azienda), MAI l'indirizzo
 5. Non confondere il Vettore/Trasportatore con il Mittente
 6. Se ci sono più indirizzi, dai priorità a "Destinazione Merce" rispetto a "Sede Legale"
+7. IMPORTANTE: Se il documento ha più pagine (es. "DDT ASSOCIATA A DDT", "Pag 1/2"), considera TUTTE le pagine come UN UNICO DDT e restituisci UN SOLO oggetto JSON con i dati consolidati
+8. Restituisci SEMPRE un singolo oggetto JSON, MAI un array
 
-Rispondi ESCLUSIVAMENTE con JSON valido, senza markdown, senza spiegazioni."""
+Rispondi ESCLUSIVAMENTE con JSON valido (un oggetto, non un array), senza markdown, senza spiegazioni."""
 
 
 class GeminiError(Exception):
@@ -174,6 +176,17 @@ class GeminiExtractor:
                         continue
                     else:
                         raise GeminiJSONError(f"Invalid JSON after {self.max_retries} retries: {e}")
+
+                # Handle case where Gemini returns a list (multi-page DDT)
+                if isinstance(extracted_json, list):
+                    if len(extracted_json) > 0:
+                        logger.warning(
+                            f"Gemini returned list with {len(extracted_json)} items for {filename}, "
+                            f"using first element (multi-page DDT detected)"
+                        )
+                        extracted_json = extracted_json[0]
+                    else:
+                        raise GeminiJSONError("Gemini returned empty list")
 
                 # Success
                 processing_time_ms = int((time.time() - start_time) * 1000)
