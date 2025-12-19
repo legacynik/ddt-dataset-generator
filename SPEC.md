@@ -1,393 +1,562 @@
 # DDT Dataset Generator - Technical Specification
 
-## Feature: Extraction Pipeline Playground
+## Vision
 
-### Overview
-
-Sistema di A/B testing per ottimizzare la pipeline di estrazione OCR. Permette di:
-- Modificare prompt e schema di estrazione dalla dashboard
-- Eseguire "test run" con configurazioni diverse
-- Confrontare risultati tra run differenti
-- Identificare la configurazione ottimale per massimizzare il match score
+Piattaforma per creare dataset di training per l'estrazione dati da DDT italiani, con:
+1. **Playground** per testare diversi LLM extractors
+2. **Benchmarking** per identificare il migliore
+3. **Dataset generation** con l'extractor vincente
+4. **Fine-tuning** di small LLM specializzati
+5. **Confronto** tra small LLM fine-tuned vs LLM potenti
 
 ---
 
-## Architecture
+## Architecture Overview
 
-### New Database Schema
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                           COMPLETE PIPELINE                              │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│   ┌─────────┐      ┌─────────────────────────────────────────────────┐  │
+│   │   PDF   │─────►│  OCR LAYER (run once, cached)                   │  │
+│   └─────────┘      │  ├─ Azure Document Intelligence → raw_text      │  │
+│                    │  └─ Datalab Marker → raw_text + structured      │  │
+│                    └─────────────────────────────────────────────────┘  │
+│                                        │                                 │
+│                                        ▼                                 │
+│                    ┌─────────────────────────────────────────────────┐  │
+│                    │  EXTRACTION LAYER (configurable, parallel)      │  │
+│                    │  ┌─────────────────────────────────────────┐    │  │
+│                    │  │  Extractor 1: Datalab (baseline)        │    │  │
+│                    │  │  Extractor 2: Gemini 1.5 Flash          │    │  │
+│                    │  │  Extractor 3: Claude 3.5 Sonnet (OR)    │    │  │
+│                    │  │  Extractor 4: GPT-4o (OpenRouter)       │    │  │
+│                    │  │  Extractor 5: Llama 3.1 70B (Ollama)    │    │  │
+│                    │  │  Extractor N: Custom fine-tuned model   │    │  │
+│                    │  └─────────────────────────────────────────┘    │  │
+│                    └─────────────────────────────────────────────────┘  │
+│                                        │                                 │
+│                                        ▼                                 │
+│                    ┌─────────────────────────────────────────────────┐  │
+│                    │  VALIDATION LAYER                               │  │
+│                    │  ├─ Manual validation (ground truth)            │  │
+│                    │  ├─ Cross-validation (consensus)                │  │
+│                    │  └─ Auto-validation (when extractors agree)     │  │
+│                    └─────────────────────────────────────────────────┘  │
+│                                        │                                 │
+│                                        ▼                                 │
+│                    ┌─────────────────────────────────────────────────┐  │
+│                    │  OUTPUT                                         │  │
+│                    │  └─ Alpaca JSONL Dataset (train + validation)   │  │
+│                    └─────────────────────────────────────────────────┘  │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Workflow
+
+### Phase 1: OCR (One-Time)
+```
+1. Upload PDFs
+2. Run Azure OCR → cache raw_text
+3. Run Datalab → cache raw_text + structured extraction
+4. Store in dataset_samples (permanent)
+```
+
+### Phase 2: Playground Testing
+```
+1. Configure multiple extractors (Gemini, Claude, GPT-4, etc.)
+2. Run test batch (15-20 DDTs) with each extractor
+3. Manually validate a subset → ground truth
+4. Calculate accuracy per extractor
+5. Identify winning extractor
+```
+
+### Phase 3: Dataset Generation
+```
+1. Use winning extractor on full corpus
+2. Auto-validate where confidence is high
+3. Manual review for edge cases
+4. Export Alpaca JSONL dataset
+```
+
+### Phase 4: Fine-Tuning (Future)
+```
+1. Fine-tune small LLM (Llama 3.1 8B, Qwen 2.5, etc.)
+2. Add fine-tuned model as new extractor
+3. Benchmark vs powerful LLMs on new DDTs
+4. Iterate until small model matches/beats large models
+```
+
+---
+
+## Database Schema
+
+### Core Tables (Existing, Modified)
 
 ```sql
 -- ===========================================
--- TABLE: extraction_configs
+-- TABLE: dataset_samples (MODIFIED)
 -- ===========================================
--- Stores different prompt/schema configurations
-CREATE TABLE extraction_configs (
+-- Stores PDF metadata and CACHED OCR results (never re-run)
+CREATE TABLE dataset_samples (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
+    updated_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
 
-    name VARCHAR(100) NOT NULL,              -- "Baseline v1", "Test prompt italiano", etc.
+    -- File info
+    filename VARCHAR(255) NOT NULL,
+    pdf_storage_path TEXT NOT NULL,
+    file_size_bytes INTEGER,
+
+    -- CACHED OCR (run once, permanent)
+    azure_raw_ocr TEXT,                    -- Azure OCR text (cached)
+    azure_processing_time_ms INTEGER,
+    datalab_raw_ocr TEXT,                  -- Datalab OCR text (cached)
+    datalab_structured JSONB,              -- Datalab structured extraction (baseline)
+    datalab_processing_time_ms INTEGER,
+    ocr_completed_at TIMESTAMPTZ,          -- When OCR was cached
+
+    -- Ground truth (from manual validation)
+    ground_truth_json JSONB,               -- Manually verified correct values
+    ground_truth_validated_at TIMESTAMPTZ,
+    ground_truth_notes TEXT,
+
+    -- Dataset assignment
+    dataset_split VARCHAR(10) CHECK (dataset_split IN ('train', 'validation', 'test'))
+);
+```
+
+### New Tables
+
+```sql
+-- ===========================================
+-- TABLE: extractors
+-- ===========================================
+-- Configurable extraction models
+CREATE TABLE extractors (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
+    updated_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
+
+    -- Identity
+    name VARCHAR(100) NOT NULL UNIQUE,     -- "Gemini 1.5 Flash", "Claude 3.5 Sonnet"
     description TEXT,
 
-    -- Gemini configuration
-    gemini_system_prompt TEXT NOT NULL,
-    gemini_temperature DECIMAL(3,2) DEFAULT 0.1,
+    -- Type and model
+    type VARCHAR(20) NOT NULL              -- gemini, openrouter, ollama, datalab, custom
+        CHECK (type IN ('gemini', 'openrouter', 'ollama', 'datalab', 'custom')),
+    model_id VARCHAR(100) NOT NULL,        -- "gemini-1.5-flash", "anthropic/claude-3.5-sonnet"
 
-    -- Datalab configuration
-    datalab_schema JSONB NOT NULL,           -- DDT_EXTRACTION_SCHEMA
+    -- Configuration
+    system_prompt TEXT NOT NULL,
+    extraction_schema JSONB NOT NULL,      -- JSON schema for extraction
+    temperature DECIMAL(3,2) DEFAULT 0.1,
+    max_tokens INTEGER DEFAULT 2048,
 
-    -- Metadata
-    is_default BOOLEAN DEFAULT FALSE,        -- Mark the production config
-    created_by VARCHAR(100) DEFAULT 'system'
+    -- API settings
+    api_base_url TEXT,                     -- For OpenRouter/Ollama
+    api_key_env VARCHAR(50),               -- Env var name: "OPENROUTER_API_KEY"
+
+    -- Status
+    is_active BOOLEAN DEFAULT TRUE,
+    is_baseline BOOLEAN DEFAULT FALSE,     -- Mark one as baseline for comparison
+
+    -- Calculated accuracy (updated after benchmarks)
+    overall_accuracy DECIMAL(5,4),         -- 0.0000 to 1.0000
+    last_benchmark_at TIMESTAMPTZ
 );
 
 -- ===========================================
--- TABLE: processing_runs
+-- TABLE: extraction_runs
 -- ===========================================
--- Tracks each test/processing run
-CREATE TABLE processing_runs (
+-- Test runs for benchmarking extractors
+CREATE TABLE extraction_runs (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
     completed_at TIMESTAMPTZ,
 
-    name VARCHAR(100) NOT NULL,              -- "Test Run 2024-12-19 #1"
+    -- Identity
+    name VARCHAR(100) NOT NULL,            -- "Test Run 2024-12-19 #1"
     description TEXT,
 
-    -- Configuration used
-    config_id UUID REFERENCES extraction_configs(id),
+    -- Configuration
+    extractor_id UUID NOT NULL REFERENCES extractors(id),
+
+    -- Scope
+    sample_ids UUID[],                     -- Specific samples, or NULL for all
 
     -- Status
     status VARCHAR(20) DEFAULT 'pending' NOT NULL
-        CHECK (status IN ('pending', 'running', 'completed', 'failed')),
+        CHECK (status IN ('pending', 'running', 'completed', 'failed', 'cancelled')),
 
     -- Aggregated results
     total_samples INTEGER DEFAULT 0,
     processed INTEGER DEFAULT 0,
-    auto_validated INTEGER DEFAULT 0,
-    needs_review INTEGER DEFAULT 0,
-    errors INTEGER DEFAULT 0,
-    avg_match_score DECIMAL(5,4),
-    total_processing_time_ms BIGINT,
+    successful INTEGER DEFAULT 0,
+    failed INTEGER DEFAULT 0,
+
+    -- Accuracy (calculated vs ground truth where available)
+    accuracy_vs_ground_truth DECIMAL(5,4),
+    accuracy_vs_baseline DECIMAL(5,4),     -- vs Datalab
+    avg_processing_time_ms INTEGER,
 
     -- Notes
     notes TEXT
 );
 
 -- ===========================================
--- TABLE: run_results
+-- TABLE: extraction_results
 -- ===========================================
--- Stores extraction results per run (allows multiple runs per sample)
-CREATE TABLE run_results (
+-- Results per sample per run
+CREATE TABLE extraction_results (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
 
     -- Links
-    run_id UUID NOT NULL REFERENCES processing_runs(id) ON DELETE CASCADE,
+    run_id UUID NOT NULL REFERENCES extraction_runs(id) ON DELETE CASCADE,
     sample_id UUID NOT NULL REFERENCES dataset_samples(id) ON DELETE CASCADE,
+    extractor_id UUID NOT NULL REFERENCES extractors(id),
 
-    -- Datalab results
-    datalab_raw_ocr TEXT,
-    datalab_json JSONB,
-    datalab_processing_time_ms INTEGER,
-    datalab_error TEXT,
+    -- Results
+    extracted_json JSONB,
+    processing_time_ms INTEGER,
+    error_message TEXT,
+    success BOOLEAN DEFAULT TRUE,
 
-    -- Azure + Gemini results
-    azure_raw_ocr TEXT,
-    azure_processing_time_ms INTEGER,
-    azure_error TEXT,
-    gemini_json JSONB,
-    gemini_processing_time_ms INTEGER,
-    gemini_error TEXT,
+    -- Comparison scores
+    match_vs_ground_truth DECIMAL(5,4),    -- vs manual validation
+    match_vs_baseline DECIMAL(5,4),        -- vs Datalab
+    field_matches JSONB,                   -- {"mittente": true, "numero_documento": false, ...}
 
-    -- Comparison
-    match_score DECIMAL(5,4),
-    discrepancies TEXT[],
+    UNIQUE(run_id, sample_id)
+);
 
-    -- Validation
-    status VARCHAR(20) DEFAULT 'pending' NOT NULL,
-    validated_output JSONB,
+-- ===========================================
+-- TABLE: field_accuracy
+-- ===========================================
+-- Per-field accuracy tracking for each extractor
+CREATE TABLE field_accuracy (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    updated_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
 
-    UNIQUE(run_id, sample_id)  -- One result per sample per run
+    extractor_id UUID NOT NULL REFERENCES extractors(id) ON DELETE CASCADE,
+    field_name VARCHAR(50) NOT NULL,       -- "mittente", "numero_documento", etc.
+
+    correct_count INTEGER DEFAULT 0,
+    total_count INTEGER DEFAULT 0,
+    accuracy DECIMAL(5,4),                 -- correct_count / total_count
+
+    UNIQUE(extractor_id, field_name)
 );
 
 -- Indexes
-CREATE INDEX idx_run_results_run_id ON run_results(run_id);
-CREATE INDEX idx_run_results_sample_id ON run_results(sample_id);
-CREATE INDEX idx_run_results_match_score ON run_results(match_score);
+CREATE INDEX idx_extraction_results_run ON extraction_results(run_id);
+CREATE INDEX idx_extraction_results_sample ON extraction_results(sample_id);
+CREATE INDEX idx_extraction_results_extractor ON extraction_results(extractor_id);
+CREATE INDEX idx_extraction_runs_extractor ON extraction_runs(extractor_id);
+CREATE INDEX idx_field_accuracy_extractor ON field_accuracy(extractor_id);
 ```
 
 ---
 
 ## API Endpoints
 
-### Configuration Management
+### Extractors Management
 
 ```
-GET    /api/configs                    List all extraction configs
-POST   /api/configs                    Create new config
-GET    /api/configs/{id}               Get config details
-PATCH  /api/configs/{id}               Update config
-DELETE /api/configs/{id}               Delete config (if not used)
-POST   /api/configs/{id}/set-default   Set as default config
+GET    /api/extractors                     List all extractors
+POST   /api/extractors                     Create new extractor
+GET    /api/extractors/{id}                Get extractor details
+PATCH  /api/extractors/{id}                Update extractor config
+DELETE /api/extractors/{id}                Delete extractor
+POST   /api/extractors/{id}/test           Test extractor on single sample
+POST   /api/extractors/{id}/set-baseline   Set as baseline for comparison
 ```
 
-### Run Management
+### Extraction Runs
 
 ```
-GET    /api/runs                       List all runs
-POST   /api/runs                       Create and start new run
-GET    /api/runs/{id}                  Get run details + results
-DELETE /api/runs/{id}                  Delete run and its results
-GET    /api/runs/{id}/results          Get detailed results for run
+GET    /api/runs                           List all runs
+POST   /api/runs                           Create and start new run
+GET    /api/runs/{id}                      Get run details
+GET    /api/runs/{id}/results              Get detailed results
+DELETE /api/runs/{id}                      Delete run
+POST   /api/runs/{id}/cancel               Cancel running extraction
 ```
 
-### Comparison
+### Comparison & Benchmarking
 
 ```
-GET    /api/runs/compare?run_ids=id1,id2    Compare two runs
-GET    /api/samples/{id}/history            Get all run results for a sample
+GET    /api/benchmark                      Get extractor leaderboard
+GET    /api/benchmark/compare?ids=a,b      Compare two extractors
+GET    /api/samples/{id}/extractions       Get all extractions for sample
+POST   /api/samples/{id}/ground-truth      Set ground truth for sample
 ```
 
----
+### Dataset Export
 
-## API Schemas
-
-### CreateConfigRequest
-```json
-{
-  "name": "Test italiano v2",
-  "description": "Prompt ottimizzato per DDT italiani",
-  "gemini_system_prompt": "Sei un assistente specializzato...",
-  "gemini_temperature": 0.1,
-  "datalab_schema": {
-    "type": "object",
-    "properties": {
-      "mittente": {"type": "string", "description": "..."},
-      ...
-    }
-  }
-}
 ```
-
-### CreateRunRequest
-```json
-{
-  "name": "Test Run #3",
-  "description": "Testing new prompt",
-  "config_id": "uuid-of-config",
-  "sample_ids": null  // null = all samples, or list of specific IDs
-}
-```
-
-### CompareRunsResponse
-```json
-{
-  "runs": [
-    {
-      "id": "run-1-uuid",
-      "name": "Baseline",
-      "config_name": "Default v1",
-      "avg_match_score": 0.82,
-      "auto_validated": 6,
-      "needs_review": 15
-    },
-    {
-      "id": "run-2-uuid",
-      "name": "New Prompt",
-      "config_name": "Test italiano v2",
-      "avg_match_score": 0.91,
-      "auto_validated": 14,
-      "needs_review": 7
-    }
-  ],
-  "comparison": {
-    "match_score_delta": +0.09,
-    "auto_validated_delta": +8,
-    "improved_samples": ["sample-1", "sample-5", ...],
-    "degraded_samples": ["sample-12"],
-    "field_improvements": {
-      "mittente": {"run1_accuracy": 0.85, "run2_accuracy": 0.95},
-      "numero_ordine": {"run1_accuracy": 0.70, "run2_accuracy": 0.88}
-    }
-  }
-}
+POST   /api/export                         Export dataset
+       - extractor_id: which extractor's output to use
+       - ocr_source: "azure" or "datalab"
+       - split_ratio: train/validation split
 ```
 
 ---
 
-## Dashboard UI Components
+## Extractor Types
+
+### 1. Gemini (Native)
+```python
+{
+    "type": "gemini",
+    "model_id": "gemini-1.5-flash",  # or gemini-1.5-pro
+    "api_key_env": "GOOGLE_API_KEY"
+}
+```
+
+### 2. OpenRouter (Multi-Model)
+```python
+{
+    "type": "openrouter",
+    "model_id": "anthropic/claude-3.5-sonnet",  # or openai/gpt-4o, meta-llama/llama-3.1-70b
+    "api_base_url": "https://openrouter.ai/api/v1",
+    "api_key_env": "OPENROUTER_API_KEY"
+}
+```
+
+### 3. Ollama (Local)
+```python
+{
+    "type": "ollama",
+    "model_id": "llama3.1:8b",  # or mistral, qwen2.5, etc.
+    "api_base_url": "http://localhost:11434"
+}
+```
+
+### 4. Datalab (Baseline)
+```python
+{
+    "type": "datalab",
+    "model_id": "datalab-marker",
+    "is_baseline": True  # Always compare against this
+}
+```
+
+### 5. Custom (Fine-tuned)
+```python
+{
+    "type": "custom",
+    "model_id": "ddt-extractor-v1",  # Your fine-tuned model
+    "api_base_url": "http://your-model-server:8080"
+}
+```
+
+---
+
+## Dashboard UI
 
 ### 1. Playground Page (`/playground`)
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│  Extraction Pipeline Playground                                  │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  ┌─────────────────────┐  ┌─────────────────────────────────┐  │
-│  │ Configurations      │  │ Gemini System Prompt            │  │
-│  │ ─────────────────── │  │ ┌─────────────────────────────┐ │  │
-│  │ ○ Default v1        │  │ │ Sei un assistente          │ │  │
-│  │ ● Test italiano v2  │  │ │ specializzato...           │ │  │
-│  │ ○ Minimal prompt    │  │ │                             │ │  │
-│  │                     │  │ │ REGOLE:                     │ │  │
-│  │ [+ New Config]      │  │ │ 1. Estrai SOLO...          │ │  │
-│  └─────────────────────┘  │ └─────────────────────────────┘ │  │
-│                           │                                  │  │
-│                           │ Temperature: [0.1] ────○───────  │  │
-│                           └─────────────────────────────────┘  │
-│                                                                  │
-│  ┌──────────────────────────────────────────────────────────┐  │
-│  │ Datalab Extraction Schema (JSON)                          │  │
-│  │ ┌──────────────────────────────────────────────────────┐ │  │
-│  │ │ {                                                     │ │  │
-│  │ │   "properties": {                                     │ │  │
-│  │ │     "mittente": {                                     │ │  │
-│  │ │       "description": "Estrai SOLO la Ragione..."     │ │  │
-│  │ │     },                                                │ │  │
-│  │ │     ...                                               │ │  │
-│  │ │   }                                                   │ │  │
-│  │ │ }                                                     │ │  │
-│  │ └──────────────────────────────────────────────────────┘ │  │
-│  └──────────────────────────────────────────────────────────┘  │
-│                                                                  │
-│  ┌────────────────┐  ┌─────────────────┐                       │
-│  │ 💾 Save Config │  │ ▶ Start Test Run │                       │
-│  └────────────────┘  └─────────────────┘                       │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│  Extraction Playground                                                   │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  ┌─────────────────────────────────────────────────────────────────┐    │
+│  │  Extractors                                              [+ Add] │    │
+│  │  ───────────────────────────────────────────────────────────── │    │
+│  │  ● Datalab (baseline)              85.2%    ✓ Active           │    │
+│  │  ○ Gemini 1.5 Flash                91.4%    ✓ Active           │    │
+│  │  ○ Claude 3.5 Sonnet (OpenRouter)  94.1%    ✓ Active           │    │
+│  │  ○ GPT-4o (OpenRouter)             92.8%    ✓ Active           │    │
+│  │  ○ Llama 3.1 70B (Ollama)          88.5%    ○ Inactive         │    │
+│  └─────────────────────────────────────────────────────────────────┘    │
+│                                                                          │
+│  ┌─────────────────────────────────────────────────────────────────┐    │
+│  │  Selected: Claude 3.5 Sonnet                          [Edit]    │    │
+│  │  ─────────────────────────────────────────────────────────────  │    │
+│  │                                                                  │    │
+│  │  System Prompt:                                                  │    │
+│  │  ┌─────────────────────────────────────────────────────────┐   │    │
+│  │  │ Sei un assistente specializzato nell'estrazione dati   │   │    │
+│  │  │ da Documenti di Trasporto (DDT) italiani.              │   │    │
+│  │  │                                                         │   │    │
+│  │  │ REGOLE:                                                 │   │    │
+│  │  │ 1. Estrai SOLO i dati richiesti...                     │   │    │
+│  │  └─────────────────────────────────────────────────────────┘   │    │
+│  │                                                                  │    │
+│  │  Temperature: [0.1] ────●───────────────                        │    │
+│  │                                                                  │    │
+│  │  Extraction Schema:                                              │    │
+│  │  ┌─────────────────────────────────────────────────────────┐   │    │
+│  │  │ {                                                       │   │    │
+│  │  │   "properties": {                                       │   │    │
+│  │  │     "mittente": {"description": "Ragione sociale..."}  │   │    │
+│  │  │   }                                                     │   │    │
+│  │  │ }                                                       │   │    │
+│  │  └─────────────────────────────────────────────────────────┘   │    │
+│  │                                                                  │    │
+│  │  [Save Changes]   [Test on 1 Sample]   [Start Test Run (20)]   │    │
+│  └─────────────────────────────────────────────────────────────────┘    │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 2. Runs Comparison Page (`/runs`)
+### 2. Benchmark Page (`/benchmark`)
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│  Test Runs                                              [+ New] │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │ □ Run Name          Config        Score  Auto  Review   │   │
-│  │ ─────────────────────────────────────────────────────── │   │
-│  │ ☑ Baseline v1       Default       82%    6     15      │   │
-│  │ ☑ Test italiano     Test v2       91%    14    7       │   │
-│  │ □ Minimal prompt    Minimal       75%    4     17      │   │
-│  └─────────────────────────────────────────────────────────┘   │
-│                                                                  │
-│  [Compare Selected]                                             │
-│                                                                  │
-├─────────────────────────────────────────────────────────────────┤
-│  Comparison: Baseline v1 vs Test italiano                       │
-│  ─────────────────────────────────────────                      │
-│                                                                  │
-│  Match Score:     82% → 91%  (+9% ✓)                           │
-│  Auto-validated:  6 → 14     (+8 ✓)                            │
-│  Needs Review:    15 → 7     (-8 ✓)                            │
-│                                                                  │
-│  Field Accuracy Improvements:                                   │
-│  ┌────────────────────┬──────────┬──────────┬─────────┐        │
-│  │ Field              │ Run 1    │ Run 2    │ Delta   │        │
-│  ├────────────────────┼──────────┼──────────┼─────────┤        │
-│  │ mittente           │ 85%      │ 95%      │ +10% ✓  │        │
-│  │ numero_ordine      │ 70%      │ 88%      │ +18% ✓  │        │
-│  │ codice_cliente     │ 60%      │ 75%      │ +15% ✓  │        │
-│  └────────────────────┴──────────┴──────────┴─────────┘        │
-│                                                                  │
-│  [Set "Test italiano" as Default]                               │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│  Extractor Benchmark                                                     │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  🏆 LEADERBOARD (vs Ground Truth on 20 samples)                         │
+│  ┌─────────────────────────────────────────────────────────────────┐    │
+│  │  #   Extractor              Accuracy   Avg Time   Cost/1K      │    │
+│  │  ───────────────────────────────────────────────────────────── │    │
+│  │  1.  Claude 3.5 Sonnet      94.1%      2.1s       $0.015       │    │
+│  │  2.  GPT-4o                 92.8%      1.8s       $0.025       │    │
+│  │  3.  Gemini 1.5 Flash       91.4%      1.5s       $0.001       │    │
+│  │  4.  Llama 3.1 70B          88.5%      3.2s       $0.000       │    │
+│  │  5.  Datalab (baseline)     85.2%      120s       $0.050       │    │
+│  └─────────────────────────────────────────────────────────────────┘    │
+│                                                                          │
+│  📊 FIELD-LEVEL ACCURACY                                                │
+│  ┌─────────────────────────────────────────────────────────────────┐    │
+│  │  Field                 Claude   GPT-4o   Gemini   Datalab      │    │
+│  │  ───────────────────────────────────────────────────────────── │    │
+│  │  mittente              95%      94%      92%      88%          │    │
+│  │  destinatario          96%      95%      93%      87%          │    │
+│  │  indirizzo_dest        92%      90%      88%      82%          │    │
+│  │  data_documento        98%      98%      97%      95%          │    │
+│  │  numero_documento      95%      94%      92%      85%          │    │
+│  │  numero_ordine         88%      85%      82%      75%          │    │
+│  │  codice_cliente        90%      88%      85%      80%          │    │
+│  └─────────────────────────────────────────────────────────────────┘    │
+│                                                                          │
+│  [Use "Claude 3.5 Sonnet" for Dataset Generation]                       │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 3. Sample History View (in Sample Detail)
+### 3. Runs History (`/runs`)
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│  Sample: doc001.pdf                                             │
-├─────────────────────────────────────────────────────────────────┤
-│  Run History:                                                    │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │ Run              Score   mittente        numero_doc     │   │
-│  │ ──────────────────────────────────────────────────────  │   │
-│  │ Baseline v1      75%     LAVAZZA ✓       DDT-123 ✗     │   │
-│  │ Test italiano    100%    LAVAZZA ✓       8797 ✓        │   │
-│  └─────────────────────────────────────────────────────────┘   │
-│                                                                  │
-│  [View Diff] [Use Result from "Test italiano"]                  │
-└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│  Test Runs                                                   [+ New Run]│
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  ┌─────────────────────────────────────────────────────────────────┐    │
+│  │  Run Name              Extractor        Samples  Accuracy  Time │    │
+│  │  ───────────────────────────────────────────────────────────── │    │
+│  │  Test #5 - Claude      Claude 3.5       20       94.1%     42s │    │
+│  │  Test #4 - GPT-4       GPT-4o           20       92.8%     36s │    │
+│  │  Test #3 - Gemini      Gemini Flash     20       91.4%     30s │    │
+│  │  Test #2 - Llama       Llama 3.1 70B    20       88.5%     64s │    │
+│  │  Test #1 - Baseline    Datalab          20       85.2%     40m │    │
+│  └─────────────────────────────────────────────────────────────────┘    │
+│                                                                          │
+│  [Compare Selected]  [Delete Selected]                                  │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### 4. Sample Detail (with extraction history)
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│  Sample: doc001.pdf                                              [PDF]  │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  📋 GROUND TRUTH (manually validated)                    [Edit]         │
+│  ┌─────────────────────────────────────────────────────────────────┐    │
+│  │  mittente: DENSO THERMAL SYSTEMS S.P.A.                         │    │
+│  │  destinatario: RHIAG INTER AUTO PARTS ITALIA SRL                │    │
+│  │  numero_documento: 77070609                                      │    │
+│  │  ...                                                             │    │
+│  └─────────────────────────────────────────────────────────────────┘    │
+│                                                                          │
+│  📊 EXTRACTION RESULTS                                                  │
+│  ┌─────────────────────────────────────────────────────────────────┐    │
+│  │  Extractor        mittente    destinatario    num_doc   Score  │    │
+│  │  ───────────────────────────────────────────────────────────── │    │
+│  │  Claude 3.5       ✓           ✓               ✓         100%   │    │
+│  │  GPT-4o           ✓           ✓               ✓         100%   │    │
+│  │  Gemini           ✓           ✗ (RHIAG SPA)   ✓         87.5%  │    │
+│  │  Datalab          ✓           ✓               ✗ (7707)  87.5%  │    │
+│  └─────────────────────────────────────────────────────────────────┘    │
+│                                                                          │
+│  [View Full Comparison]                                                 │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
 ## Implementation Phases
 
-### Phase 1: Database & Core API
-1. Create new database tables
-2. Migrate existing results to a "Baseline" run
-3. Implement config CRUD endpoints
-4. Implement run management endpoints
+### Phase 1: Foundation
+1. ✅ OCR caching (already implemented in dataset_samples)
+2. Create `extractors` table and seed defaults
+3. Create `extraction_runs` and `extraction_results` tables
+4. Add `ground_truth_json` to dataset_samples
 
-### Phase 2: Pipeline Integration
-1. Modify `ProcessingPipeline` to accept config parameter
-2. Store results in `run_results` instead of `dataset_samples`
-3. Update comparison logic to work per-run
+### Phase 2: Multi-Extractor Support
+1. Implement OpenRouter extractor class
+2. Implement Ollama extractor class
+3. Create extractor factory/registry
+4. API endpoints for extractor management
 
-### Phase 3: Dashboard UI
-1. Add Playground page with config editor
-2. Add Runs list and comparison view
-3. Add sample history in detail view
-4. Add "Set as Default" functionality
+### Phase 3: Run Management
+1. API endpoints for runs
+2. Run execution engine (parallel extraction)
+3. Accuracy calculation vs ground truth
+4. Field-level accuracy tracking
 
-### Phase 4: Advanced Features
-1. Auto-suggestions for prompt improvements based on errors
-2. Field-level accuracy tracking
-3. Export comparison reports
-4. Scheduled test runs
+### Phase 4: Dashboard UI
+1. Playground page (extractor config editor)
+2. Benchmark page (leaderboard)
+3. Runs history page
+4. Sample detail with extraction history
+
+### Phase 5: Dataset Generation
+1. Export using selected extractor
+2. Confidence-based auto-validation
+3. Quality report generation
+
+### Phase 6: Fine-Tuning Integration (Future)
+1. Add "custom" extractor type
+2. Integration with fine-tuning platforms
+3. A/B testing fine-tuned vs base models
 
 ---
 
-## Default Configuration
+## Environment Variables
 
-Initial config to be seeded:
+```bash
+# Existing
+GOOGLE_API_KEY=...           # Gemini
+AZURE_ENDPOINT=...           # Azure OCR
+AZURE_API_KEY=...            # Azure OCR
+DATALAB_API_KEY=...          # Datalab
 
-```python
-DEFAULT_GEMINI_PROMPT = """Sei un assistente specializzato nell'estrazione dati da Documenti di Trasporto (DDT) italiani.
-
-REGOLE:
-1. Estrai SOLO i dati richiesti, non inventare informazioni mancanti
-2. Se un campo non è presente nel documento, restituisci null
-3. Per le date, converti sempre in formato YYYY-MM-DD
-4. Per mittente e destinatario, estrai SOLO la ragione sociale (nome azienda), MAI l'indirizzo
-5. Non confondere il Vettore/Trasportatore con il Mittente
-6. Se ci sono più indirizzi, dai priorità a "Destinazione Merce" rispetto a "Sede Legale"
-7. IMPORTANTE: Se il documento ha più pagine (es. "DDT ASSOCIATA A DDT", "Pag 1/2"), considera TUTTE le pagine come UN UNICO DDT e restituisci UN SOLO oggetto JSON con i dati consolidati
-8. Restituisci SEMPRE un singolo oggetto JSON, MAI un array
-
-Rispondi ESCLUSIVAMENTE con JSON valido (un oggetto, non un array), senza markdown, senza spiegazioni."""
-
-DEFAULT_DATALAB_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "mittente": {
-            "type": "string",
-            "description": "Estrai SOLO la Ragione Sociale (Nome Azienda) che emette il documento..."
-        },
-        # ... (current schema)
-    }
-}
+# New
+OPENROUTER_API_KEY=...       # OpenRouter (Claude, GPT-4, Llama, etc.)
+OLLAMA_BASE_URL=http://localhost:11434  # Local Ollama
 ```
-
----
-
-## Migration Strategy
-
-1. **Create tables** with migration script
-2. **Seed default config** from current hardcoded values
-3. **Create "Legacy" run** with existing `dataset_samples` results
-4. **Keep `dataset_samples`** for file metadata, use `run_results` for extractions
-5. **Backward compatible** - existing API continues to work, new endpoints are additive
 
 ---
 
 ## Success Metrics
 
-- **Primary**: Average match score improvement per iteration
-- **Secondary**: Reduction in "needs_review" samples
-- **Tertiary**: Time to find optimal configuration
+| Metric | Target |
+|--------|--------|
+| Find best extractor | <5 test runs |
+| Ground truth validation | 15-20 samples |
+| Auto-validation accuracy | >95% |
+| Dataset quality score | >90% field coverage |
+| Fine-tuned model parity | Match best LLM accuracy |
