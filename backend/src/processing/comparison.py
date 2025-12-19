@@ -5,7 +5,7 @@ outputs from Datalab and Gemini extractors to determine if they
 agree on the extracted data.
 
 Match Score Algorithm:
-- Compares 8 DDT fields between two extractors
+- Compares 10 DDT fields between two extractors
 - Uses fuzzy matching (85% similarity) for long strings (>20 chars)
 - Returns score (0.0-1.0) and list of discrepant fields
 - Auto-validation threshold: >= 0.95 (95%)
@@ -19,16 +19,18 @@ from difflib import SequenceMatcher
 logger = logging.getLogger(__name__)
 
 
-# DDT fields to compare (8 total)
+# DDT fields to compare (10 total)
 DDT_FIELDS = [
     "mittente",
     "destinatario",
     "indirizzo_destinazione_completo",
     "data_documento",
     "data_trasporto",
+    "data_consegna_effettiva",
     "numero_documento",
     "numero_ordine",
     "codice_cliente",
+    "targa_automezzo",
 ]
 
 
@@ -139,11 +141,11 @@ def calculate_match_score(
 ) -> Tuple[float, List[str]]:
     """Calculate match score between Datalab and Gemini outputs.
 
-    Compares all 8 DDT fields and returns:
+    Compares all 10 DDT fields and returns:
     - Match score: ratio of matching fields (0.0 to 1.0)
     - Discrepancies: list of field names that don't match
 
-    Auto-validation threshold: score >= 0.95 (7.6/8 fields = 95%)
+    Auto-validation threshold: score >= 0.95 (9.5/10 fields = 95%)
 
     Args:
         datalab_output: Extracted data from Datalab
