@@ -196,6 +196,20 @@ REGOLE:
 6. Se ci sono più indirizzi, dai priorità a "Destinazione Merce" rispetto a "Sede Legale"
 7. IMPORTANTE: Se il documento ha più pagine (es. "DDT ASSOCIATA A DDT", "Pag 1/2"), considera TUTTE le pagine come UN UNICO DDT e restituisci UN SOLO oggetto JSON con i dati consolidati
 8. Restituisci SEMPRE un singolo oggetto JSON, MAI un array
+9. Per "data_consegna_effettiva": cerca date scritte a mano, timbri di consegna, o campi "Consegnato il"
+10. Per "targa_automezzo": cerca nel riquadro Vettore/Trasportatore o nei dati trasporto (formato: AA123BB)
+
+CAMPI DA ESTRARRE:
+- mittente: Ragione sociale di chi emette il DDT
+- destinatario: Ragione sociale di chi riceve la merce
+- indirizzo_destinazione_completo: Indirizzo fisico di consegna (Via, CAP, Città, Provincia)
+- data_documento: Data di emissione del DDT (YYYY-MM-DD)
+- data_trasporto: Data inizio trasporto (YYYY-MM-DD) - può essere null
+- data_consegna_effettiva: Data di consegna reale, spesso scritta a mano (YYYY-MM-DD) - può essere null
+- numero_documento: Numero DDT/Bolla
+- numero_ordine: Riferimento ordine cliente - può essere null
+- codice_cliente: Codice cliente - può essere null
+- targa_automezzo: Targa del veicolo di trasporto (es. AB123CD) - può essere null
 
 Rispondi ESCLUSIVAMENTE con JSON valido (un oggetto, non un array), senza markdown, senza spiegazioni.',
     '{
@@ -206,9 +220,11 @@ Rispondi ESCLUSIVAMENTE con JSON valido (un oggetto, non un array), senza markdo
             "indirizzo_destinazione_completo": {"type": "string", "description": "Indirizzo completo di consegna"},
             "data_documento": {"type": "string", "description": "Data del documento (YYYY-MM-DD)"},
             "data_trasporto": {"type": "string", "description": "Data inizio trasporto (YYYY-MM-DD)"},
+            "data_consegna_effettiva": {"type": "string", "description": "Data consegna effettiva (YYYY-MM-DD)"},
             "numero_documento": {"type": "string", "description": "Numero del DDT"},
             "numero_ordine": {"type": "string", "description": "Numero ordine cliente"},
-            "codice_cliente": {"type": "string", "description": "Codice cliente"}
+            "codice_cliente": {"type": "string", "description": "Codice cliente"},
+            "targa_automezzo": {"type": "string", "description": "Targa veicolo di trasporto (es. AB123CD)"}
         },
         "required": ["mittente", "destinatario", "indirizzo_destinazione_completo", "data_documento", "numero_documento"]
     }'::jsonb,
@@ -218,6 +234,7 @@ Rispondi ESCLUSIVAMENTE con JSON valido (un oggetto, non un array), senza markdo
 ) ON CONFLICT (name) DO UPDATE SET
     model_id = EXCLUDED.model_id,
     system_prompt = EXCLUDED.system_prompt,
+    extraction_schema = EXCLUDED.extraction_schema,
     updated_at = NOW();
 
 -- Datalab (baseline)
@@ -236,15 +253,18 @@ VALUES (
             "indirizzo_destinazione_completo": {"type": "string", "description": "Indirizzo completo di consegna"},
             "data_documento": {"type": "string", "description": "Data del documento (YYYY-MM-DD)"},
             "data_trasporto": {"type": "string", "description": "Data inizio trasporto (YYYY-MM-DD)"},
+            "data_consegna_effettiva": {"type": "string", "description": "Data consegna effettiva (YYYY-MM-DD)"},
             "numero_documento": {"type": "string", "description": "Numero del DDT"},
             "numero_ordine": {"type": "string", "description": "Numero ordine cliente"},
-            "codice_cliente": {"type": "string", "description": "Codice cliente"}
+            "codice_cliente": {"type": "string", "description": "Codice cliente"},
+            "targa_automezzo": {"type": "string", "description": "Targa veicolo di trasporto (es. AB123CD)"}
         }
     }'::jsonb,
     true,
     true
 ) ON CONFLICT (name) DO UPDATE SET
     is_baseline = true,
+    extraction_schema = EXCLUDED.extraction_schema,
     updated_at = NOW();
 
 -- ===========================================

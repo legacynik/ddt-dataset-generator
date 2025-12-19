@@ -39,6 +39,10 @@ DDT_EXTRACTION_SCHEMA = {
             "type": "string",
             "description": "La data specifica di inizio trasporto o data ritiro merce. Cerca 'Data inizio trasporto', 'Data consegna', 'Data partenza'. Logica: Questa data è spesso diversa dalla data del documento. Se non è presente esplicitamente, restituisci null."
         },
+        "data_consegna_effettiva": {
+            "type": "string",
+            "description": "La data di consegna effettiva scritta a mano o timbrata sul documento. Cerca 'Data consegna', 'Consegnato il', timbri con data. Spesso è diversa dalla data trasporto. Se non presente, restituisci null."
+        },
         "numero_documento": {
             "type": "string",
             "description": "Il numero identificativo univoco della Bolla o DDT (es. 'N. 1234/A'). Cerca 'Numero Bolla', 'Nr. DDT', 'Doc n.'."
@@ -50,6 +54,10 @@ DDT_EXTRACTION_SCHEMA = {
         "codice_cliente": {
             "type": "string",
             "description": "Estrai il codice indicato come 'Codice Cliente', 'Cod. Cli.' o simili. Se non presente, restituisci null."
+        },
+        "targa_automezzo": {
+            "type": "string",
+            "description": "La targa del veicolo di trasporto. Cerca 'Targa', 'Automezzo', 'Mezzo'. Formato tipico: AA123BB. Se non presente, restituisci null."
         }
     },
     "required": [
@@ -80,8 +88,10 @@ class DDTOutput(BaseModel):
 
     # Optional fields
     data_trasporto: Optional[str] = Field(None, description="Data inizio trasporto (YYYY-MM-DD)")
+    data_consegna_effettiva: Optional[str] = Field(None, description="Data consegna effettiva (YYYY-MM-DD)")
     numero_ordine: Optional[str] = Field(None, description="Numero ordine cliente")
     codice_cliente: Optional[str] = Field(None, description="Codice cliente")
+    targa_automezzo: Optional[str] = Field(None, description="Targa veicolo di trasporto")
 
     class Config:
         json_schema_extra = {
@@ -91,9 +101,11 @@ class DDTOutput(BaseModel):
                 "indirizzo_destinazione_completo": "Via Roma 123, 20100 Milano (MI)",
                 "data_documento": "2025-01-15",
                 "data_trasporto": "2025-01-16",
+                "data_consegna_effettiva": "2025-01-16",
                 "numero_documento": "DDT-2025-001",
                 "numero_ordine": "ORD-5678",
-                "codice_cliente": "CLI-1234"
+                "codice_cliente": "CLI-1234",
+                "targa_automezzo": "AB123CD"
             }
         }
 

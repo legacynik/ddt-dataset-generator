@@ -35,6 +35,20 @@ REGOLE:
 6. Se ci sono più indirizzi, dai priorità a "Destinazione Merce" rispetto a "Sede Legale"
 7. IMPORTANTE: Se il documento ha più pagine (es. "DDT ASSOCIATA A DDT", "Pag 1/2"), considera TUTTE le pagine come UN UNICO DDT e restituisci UN SOLO oggetto JSON con i dati consolidati
 8. Restituisci SEMPRE un singolo oggetto JSON, MAI un array
+9. Per "data_consegna_effettiva": cerca date scritte a mano, timbri di consegna, o campi "Consegnato il"
+10. Per "targa_automezzo": cerca nel riquadro Vettore/Trasportatore o nei dati trasporto (formato: AA123BB)
+
+CAMPI DA ESTRARRE:
+- mittente: Ragione sociale di chi emette il DDT
+- destinatario: Ragione sociale di chi riceve la merce
+- indirizzo_destinazione_completo: Indirizzo fisico di consegna (Via, CAP, Città, Provincia)
+- data_documento: Data di emissione del DDT (YYYY-MM-DD)
+- data_trasporto: Data inizio trasporto (YYYY-MM-DD) - può essere null
+- data_consegna_effettiva: Data di consegna reale, spesso scritta a mano (YYYY-MM-DD) - può essere null
+- numero_documento: Numero DDT/Bolla
+- numero_ordine: Riferimento ordine cliente - può essere null
+- codice_cliente: Codice cliente - può essere null
+- targa_automezzo: Targa del veicolo di trasporto (es. AB123CD) - può essere null
 
 Rispondi ESCLUSIVAMENTE con JSON valido (un oggetto, non un array), senza markdown, senza spiegazioni."""
 
