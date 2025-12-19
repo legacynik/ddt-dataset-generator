@@ -64,3 +64,8 @@ logs/
 
 # Large data files (keep in Supabase Storage)
 DDT_PROCESSING_REPORT.md
+
+# Project documentation (local only)
+SPEC.md
+PRD.md
+CLAUDE.md
