@@ -1,0 +1,1 @@
+# Azure analysis tests

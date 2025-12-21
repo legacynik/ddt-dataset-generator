@@ -6,7 +6,7 @@ This module implements the Datalab extractor which performs:
 3. Retrieval of OCR text and structured extraction
 
 Rate limits: 10 requests/minute, max 2 concurrent requests
-Polling: 3 second intervals, max 100 polls (5 minutes timeout)
+Polling: 5 second intervals, max 120 polls (10 minutes timeout)
 """
 
 import asyncio
@@ -48,8 +48,8 @@ class DatalabExtractor:
         - API Key: From settings.DATALAB_API_KEY
         - Rate limit: 10 requests/minute
         - Concurrent limit: 2 requests
-        - Poll interval: 3 seconds
-        - Max polls: 100 (5 minute timeout)
+        - Poll interval: 5 seconds
+        - Max polls: 120 (10 minute timeout)
 
     Example:
         >>> extractor = DatalabExtractor()
@@ -60,15 +60,15 @@ class DatalabExtractor:
 
     def __init__(
         self,
-        poll_interval: int = 3,
-        max_polls: int = 100,
+        poll_interval: int = 5,
+        max_polls: int = 120,
         timeout: int = 120,
     ):
         """Initialize Datalab extractor.
 
         Args:
-            poll_interval: Seconds between status polls (default: 3)
-            max_polls: Maximum number of poll attempts (default: 100)
+            poll_interval: Seconds between status polls (default: 5)
+            max_polls: Maximum number of poll attempts (default: 120)
             timeout: HTTP request timeout in seconds (default: 120)
         """
         self.api_url = settings.DATALAB_API_URL
